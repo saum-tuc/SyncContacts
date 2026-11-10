@@ -25,9 +25,13 @@ DAVx5-managed book with its server remains the account sync adapter's job.
   data, errors, and user decisions. The **Log** screen can share a read-only
   copy through Android's share sheet or clear the local log.
 - WorkManager checks about every four hours and requests a check after settings
-  changes. WorkManager persists scheduled work across ordinary process
-  termination and device reboot, subject to Android scheduling and battery
-  restrictions. Android force-stop blocks work until the user launches the app.
+  changes only when **Enable background sync** is on. This option is off by
+  default. **Sync now** always runs a one-off check, even when background sync
+  is disabled; it shows progress and then a scrollable list of changed contact
+  names. Selecting a different pair also starts its required initial sync.
+  WorkManager persists scheduled work across ordinary process termination and
+  device reboot, subject to Android scheduling and battery restrictions.
+  Android force-stop blocks work until the user launches the app.
 
 ## Safety limitations
 

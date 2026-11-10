@@ -24,8 +24,10 @@ is swiped away or its process is killed, and must be restored across reboot
 without requiring an app launch. Rely on WorkManager's supported reboot
 rescheduling rather than an independent duplicate scheduler; verify that its
 required boot integration remains enabled in the merged manifest. Do not
-schedule periodic checks while setup is incomplete or synchronization is
-paused, including after a reboot.
+schedule periodic checks while setup is incomplete or **Enable background
+sync** is off, including after a reboot. That setting is off by default. A
+user-requested manual run and the initial reconciliation after changing the
+pair may run while background sync is disabled.
 
 WorkManager persists its work across app restarts and device reboots, but
 actual execution is subject to Android scheduling, battery management, device

@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -204,6 +205,7 @@ public final class PlatformTest {
             AddressBook destination = new AddressBook(null, null, null);
             SyncSettings settings = new SyncSettings(context);
             settings.select(source, destination);
+            settings.setBackgroundSyncEnabled(true);
             snapshot = ContactSnapshot.file(context.getFilesDir(), source, destination);
             snapshot.delete();
             ActivityLog log = new ActivityLog(context);
@@ -255,6 +257,7 @@ public final class PlatformTest {
         long sourceId = ContentUris.parseId(source);
         AddressBook sourceBook = readBook(resolver, sourceId);
         AddressBook destinationBook = new AddressBook(null, null, null);
+        String email = "engine-" + UUID.randomUUID() + "@example.test";
         Uri destination = null;
         try {
             insertValue(resolver, sourceId,
@@ -263,32 +266,39 @@ public final class PlatformTest {
             insertValue(resolver, sourceId,
                     ContactsContract.CommonDataKinds.Phone.CONTENT_ITEM_TYPE, "+49 30 12345678");
             insertValue(resolver, sourceId,
-                    ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE, "engine@example.test");
+                    ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE, email);
             new SyncSettings(context).select(sourceBook, destinationBook);
-            ListenableWorker.Result firstRun = SyncEngine.run(context, () -> false);
+            assertFalse(new SyncSettings(context).backgroundSyncEnabled());
+            assertEquals(ListenableWorker.Result.success(),
+                    SyncEngine.run(context, () -> false));
+            assertNull(findDestination(resolver, email, destinationBook));
+            SyncEngine.RunReport firstReport = SyncEngine.runManual(context, () -> false);
+            assertTrue(firstReport.success());
+            assertTrue(firstReport.syncedItems().contains("Engine Synthetic"));
+            ListenableWorker.Result firstRun = firstReport.result();
             assertEquals(new SyncSettings(context).status() + "\n" + new ActivityLog(context).read(),
                     ListenableWorker.Result.success(), firstRun);
-            destination = findDestination(resolver, "engine@example.test");
+            destination = findDestination(resolver, email, destinationBook);
             assertNotNull(destination);
             long destinationId = ContentUris.parseId(destination);
             assertEquals(1, count(resolver, destinationId,
                     ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE));
 
             assertEquals(androidx.work.ListenableWorker.Result.success(),
-                    SyncEngine.run(context, () -> false));
+                    SyncEngine.runManual(context, () -> false).result());
             assertEquals(1, count(resolver, destinationId,
                     ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE));
             insertValue(resolver, sourceId,
                     ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE, "Added later");
             assertEquals(androidx.work.ListenableWorker.Result.success(),
-                    SyncEngine.run(context, () -> false));
+                    SyncEngine.runManual(context, () -> false).result());
             assertEquals(1, count(resolver, destinationId,
                     ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE));
 
             assertEquals(1, resolver.delete(source, null, null));
             source = null;
             assertEquals(androidx.work.ListenableWorker.Result.success(),
-                    SyncEngine.run(context, () -> false));
+                    SyncEngine.runManual(context, () -> false).result());
             try (Cursor cursor = resolver.query(ContactsContract.RawContacts.CONTENT_URI,
                     new String[]{ContactsContract.RawContacts._ID},
                     ContactsContract.RawContacts._ID + " = ? AND "
@@ -344,7 +354,8 @@ public final class PlatformTest {
                     destinationData.fields().get(ProviderContact.PHONE));
             new SyncSettings(context).select(sourceBook, destinationBook);
 
-            ListenableWorker.Result firstRun = SyncEngine.run(context, () -> false);
+            ListenableWorker.Result firstRun =
+                    SyncEngine.runManual(context, () -> false).result();
             assertEquals(new SyncSettings(context).status() + "\n" + new ActivityLog(context).read(),
                     ListenableWorker.Result.success(), firstRun);
             assertEquals(1, count(resolver, destinationId,
@@ -365,7 +376,7 @@ public final class PlatformTest {
             assertEquals(1, count(resolver, destinationId,
                     ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE));
             assertEquals(androidx.work.ListenableWorker.Result.success(),
-                    SyncEngine.run(context, () -> false));
+                    SyncEngine.runManual(context, () -> false).result());
             assertEquals(1, count(resolver, destinationId,
                     ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE));
         } finally {
@@ -412,15 +423,20 @@ public final class PlatformTest {
     }
 
     /** Finds the synthetic destination by its unique test email value. */
-    private Uri findDestination(ContentResolver resolver, String email) {
+    private Uri findDestination(ContentResolver resolver, String email, AddressBook expectedBook) {
         try (Cursor cursor = resolver.query(ContactsContract.Data.CONTENT_URI,
                 new String[]{ContactsContract.Data.RAW_CONTACT_ID},
                 ContactsContract.Data.MIMETYPE + " = ? AND " + ContactsContract.Data.DATA1 + " = ?",
                 new String[]{ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE, email}, null)) {
             assertNotNull(cursor);
-            assertTrue(cursor.moveToFirst());
-            return ContentUris.withAppendedId(ContactsContract.RawContacts.CONTENT_URI,
-                    cursor.getLong(0));
+            while (cursor.moveToNext()) {
+                long rawId = cursor.getLong(0);
+                if (expectedBook.equals(readBook(resolver, rawId))) {
+                    return ContentUris.withAppendedId(
+                            ContactsContract.RawContacts.CONTENT_URI, rawId);
+                }
+            }
+            return null;
         }
     }
 
@@ -460,6 +476,7 @@ public final class PlatformTest {
         AtomicFile snapshot = ContactSnapshot.file(context.getFilesDir(), source, destination);
         try {
             new SyncSettings(context).select(source, destination);
+            new SyncSettings(context).setBackgroundSyncEnabled(true);
             JSONObject previous = new JSONObject().put("123", new org.json.JSONArray().put("old"));
             ContactSnapshot.save(snapshot, previous);
             assertEquals(ListenableWorker.Result.retry(), worker(context).doWork());
@@ -477,6 +494,23 @@ public final class PlatformTest {
     public void testDiscoveryIncludesEmptyDeviceLocalBook() {
         Context context = isolatedContext();
         assertTrue(ContactBooks.discover(context).contains(new AddressBook(null, null, null)));
+    }
+
+    /** Keeps background sync disabled by default, including after pair configuration. */
+    @Test
+    public void testBackgroundSyncDefaultsDisabled() throws Exception {
+        Context context = isolatedContext();
+        try {
+            SyncSettings settings = new SyncSettings(context);
+            assertFalse(settings.backgroundSyncEnabled());
+            settings.select(new AddressBook("source", "test", null),
+                    new AddressBook("destination", "test", null));
+            assertFalse(settings.backgroundSyncEnabled());
+            settings.setBackgroundSyncEnabled(true);
+            assertTrue(settings.backgroundSyncEnabled());
+        } finally {
+            cleanupIsolatedContext(context);
+        }
     }
 
     /** Creates one explicitly addressed synthetic local raw contact. */

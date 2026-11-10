@@ -5,7 +5,7 @@ import android.content.SharedPreferences;
 
 import org.json.JSONException;
 
-/** Persists the active address-book pair and monitoring state. */
+/** Persists the active address-book pair and background-sync preference. */
 public final class SyncSettings {
     public static final Object LOCK = new Object();
     private final SharedPreferences preferences;
@@ -27,9 +27,9 @@ public final class SyncSettings {
         return value == null ? null : AddressBook.decode(value);
     }
 
-    /** Indicates whether monitoring is enabled for a completed configuration. */
-    public boolean enabled() {
-        return preferences.getBoolean("enabled", false);
+    /** Indicates whether automatic background synchronization is enabled. */
+    public boolean backgroundSyncEnabled() {
+        return preferences.getBoolean("background_sync_enabled", false);
     }
 
     /** Identifies settings changes so workers can reject stale scans. */
@@ -43,7 +43,7 @@ public final class SyncSettings {
             throw new IllegalArgumentException("Source and destination must differ");
         }
         boolean saved = preferences.edit().putString("source", source.encode())
-                .putString("destination", destination.encode()).putBoolean("enabled", true)
+                .putString("destination", destination.encode())
                 .putString("status", "Source check requested; no check has completed for this selection.")
                 .putLong("generation", generation() + 1).commit();
         if (!saved) {
@@ -51,11 +51,10 @@ public final class SyncSettings {
         }
     }
 
-    /** Changes monitoring state and invalidates any in-progress scan. */
-    public void setEnabled(boolean enabled) {
-        if (!preferences.edit().putBoolean("enabled", enabled)
-                .putLong("generation", generation() + 1).commit()) {
-            throw new IllegalStateException("Could not save monitoring state");
+    /** Stores the background-sync preference without changing the selected pair. */
+    public void setBackgroundSyncEnabled(boolean enabled) {
+        if (!preferences.edit().putBoolean("background_sync_enabled", enabled).commit()) {
+            throw new IllegalStateException("Could not save background-sync setting");
         }
     }
 

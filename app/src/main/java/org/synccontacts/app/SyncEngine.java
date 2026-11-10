@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -25,6 +26,11 @@ import java.util.Set;
 public final class SyncEngine {
     private static final Object LOCK = new Object();
 
+    /** Reports the result and contact names changed by one user-requested run. */
+    public record RunReport(androidx.work.ListenableWorker.Result result, boolean success,
+            List<String> syncedItems, String message) {
+    }
+
     private SyncEngine() {
     }
 
@@ -32,7 +38,15 @@ public final class SyncEngine {
     public static androidx.work.ListenableWorker.Result run(Context context,
             java.util.function.BooleanSupplier stopped) {
         synchronized (LOCK) {
-            return runLocked(context, stopped);
+            return runLocked(context, stopped, true).result();
+        }
+    }
+
+    /** Runs a one-off reconciliation regardless of the background-sync setting. */
+    public static RunReport runManual(Context context,
+            java.util.function.BooleanSupplier stopped) {
+        synchronized (LOCK) {
+            return runLocked(context, stopped, false);
         }
     }
 
@@ -44,7 +58,7 @@ public final class SyncEngine {
             SyncSettings settings = new SyncSettings(context);
             AddressBook source = settings.source();
             AddressBook destination = settings.destination();
-            if (!settings.enabled() || source == null || destination == null
+            if (source == null || destination == null
                     || !conflict.pairKey().equals(SyncStateStore.pairKey(source, destination))) {
                 throw new IllegalStateException("Conflict belongs to an inactive address-book pair");
             }
@@ -75,7 +89,7 @@ public final class SyncEngine {
                                 + conflict.sourceId() + " / " + conflict.field());
                     }
                 }
-                MonitorScheduler.request(context);
+                requestBackgroundIfEnabled(context, settings);
                 return;
             }
             try (SyncStateStore state = new SyncStateStore(context)) {
@@ -93,7 +107,7 @@ public final class SyncEngine {
                 }
                 state.resolveConflict(conflict.key());
             }
-            MonitorScheduler.request(context);
+            requestBackgroundIfEnabled(context, settings);
         }
     }
 
@@ -118,7 +132,7 @@ public final class SyncEngine {
             SyncSettings settings = new SyncSettings(context);
             AddressBook sourceBook = settings.source();
             AddressBook destinationBook = settings.destination();
-            if (!settings.enabled() || sourceBook == null || destinationBook == null) {
+            if (sourceBook == null || destinationBook == null) {
                 throw new IllegalStateException("Synchronization is not configured");
             }
             String pair = SyncStateStore.pairKey(sourceBook, destinationBook);
@@ -148,22 +162,25 @@ public final class SyncEngine {
                 }
                 state.resolveMatch(pair, sourceId);
             }
-            MonitorScheduler.request(context);
+            requestBackgroundIfEnabled(context, settings);
         }
     }
 
     /** Loads the active pair and captures stable source and destination snapshots. */
-    private static androidx.work.ListenableWorker.Result runLocked(Context context,
-            java.util.function.BooleanSupplier stopped) {
+    private static RunReport runLocked(Context context,
+            java.util.function.BooleanSupplier stopped, boolean requireBackgroundSync) {
         SyncSettings settings = new SyncSettings(context);
         ActivityLog log = new ActivityLog(context);
         long generation = -1;
+        Set<String> syncedItems = new LinkedHashSet<>();
         try {
             AddressBook source;
             AddressBook destination;
             synchronized (SyncSettings.LOCK) {
-                if (!settings.enabled() || stopped.getAsBoolean()) {
-                    return androidx.work.ListenableWorker.Result.success();
+                if ((requireBackgroundSync && !settings.backgroundSyncEnabled())
+                        || stopped.getAsBoolean()) {
+                    return new RunReport(androidx.work.ListenableWorker.Result.success(), true,
+                            List.of(), "Background synchronization is disabled.");
                 }
                 source = settings.source();
                 destination = settings.destination();
@@ -202,8 +219,10 @@ public final class SyncEngine {
                 int pending = 0;
                 int applied = 0;
                 for (ReconciliationPlanner.Plan plan : plans) {
-                    if (stopped.getAsBoolean() || !active(settings, generation)) {
-                        return androidx.work.ListenableWorker.Result.success();
+                    if (stopped.getAsBoolean()
+                            || !active(settings, generation, requireBackgroundSync)) {
+                        return new RunReport(androidx.work.ListenableWorker.Result.success(), true,
+                                List.copyOf(syncedItems), "Synchronization stopped.");
                     }
                     ProviderContact from = sources.get(plan.sourceId());
                     switch (plan.action()) {
@@ -215,6 +234,7 @@ public final class SyncEngine {
                                         + " to new destination raw contact " + destinationId);
                                 state.link(pairKey, plan.sourceId(), Long.toString(destinationId));
                                 state.clearForceCreate(pairKey, plan.sourceId());
+                                syncedItems.add(from.displayName());
                                 applied++;
                             } catch (IllegalStateException unresolved) {
                                 pending++;
@@ -225,7 +245,12 @@ public final class SyncEngine {
                         case RECONCILE -> {
                             ProviderContact to = destinations.get(plan.destinationId());
                             linkIfNeeded(log, state, pairKey, plan, from, to);
-                            applied += append(context, plan, from, to, source, destination, pairKey);
+                            int changesApplied = append(
+                                    context, plan, from, to, source, destination, pairKey);
+                            if (changesApplied > 0) {
+                                syncedItems.add(from.displayName());
+                            }
+                            applied += changesApplied;
                             ProviderContact conflictDestination = ProviderContact.read(
                                     context.getContentResolver(), to.identity().rawId(), destination);
                             pending += recordConflicts(log, state, pairKey, plan, from, conflictDestination,
@@ -253,9 +278,11 @@ public final class SyncEngine {
                 clearObsoleteConflicts(log, state, pairKey, seenConflicts);
                 clearObsoleteMatches(log, state, pairKey, seenMatches);
                 applied += deleteMissingSources(context, log, state, pairKey, source,
-                        destination, previous, current, stopped, settings, generation);
-                if (!active(settings, generation) || stopped.getAsBoolean()) {
-                    return androidx.work.ListenableWorker.Result.success();
+                        destination, previous, current, stopped, settings, generation,
+                        requireBackgroundSync, syncedItems);
+                if (!active(settings, generation, requireBackgroundSync) || stopped.getAsBoolean()) {
+                    return new RunReport(androidx.work.ListenableWorker.Result.success(), true,
+                            List.copyOf(syncedItems), "Synchronization stopped.");
                 }
 
                 // Commit the observation only after writes and pending decisions are durable.
@@ -269,7 +296,8 @@ public final class SyncEngine {
                         : "Sync check completed with " + pending + " pending review item(s).";
                 settings.status(status);
                 log.append("Sync check completed: " + status);
-                return androidx.work.ListenableWorker.Result.success();
+                return new RunReport(androidx.work.ListenableWorker.Result.success(), true,
+                        List.copyOf(syncedItems), status);
             }
         } catch (IOException | JSONException | IllegalStateException | IllegalArgumentException
                  | SecurityException | android.os.RemoteException
@@ -277,9 +305,11 @@ public final class SyncEngine {
             String message = "Sync check failed: " + error.getClass().getSimpleName()
                     + ": " + String.valueOf(error.getMessage());
             synchronized (SyncSettings.LOCK) {
-                if (generation >= 0 && (!settings.enabled()
-                        || settings.generation() != generation || stopped.getAsBoolean())) {
-                    return androidx.work.ListenableWorker.Result.success();
+                if (generation >= 0 && (settings.generation() != generation
+                        || (requireBackgroundSync && !settings.backgroundSyncEnabled())
+                        || stopped.getAsBoolean())) {
+                    return new RunReport(androidx.work.ListenableWorker.Result.success(), true,
+                            List.copyOf(syncedItems), "Synchronization stopped.");
                 }
                 try {
                     log.append(message);
@@ -288,7 +318,8 @@ public final class SyncEngine {
                     android.util.Log.e("SyncContacts", "Unable to persist synchronization error", logError);
                 }
             }
-            return androidx.work.ListenableWorker.Result.retry();
+            return new RunReport(androidx.work.ListenableWorker.Result.retry(), false,
+                    List.copyOf(syncedItems), message);
         }
     }
 
@@ -442,7 +473,8 @@ public final class SyncEngine {
     private static int deleteMissingSources(Context context, ActivityLog log, SyncStateStore state,
             String pairKey, AddressBook source, AddressBook destination, JSONObject previous,
             JSONObject current, java.util.function.BooleanSupplier stopped, SyncSettings settings,
-            long generation) throws IOException, JSONException, android.os.RemoteException,
+            long generation, boolean requireBackgroundSync, Set<String> syncedItems)
+            throws IOException, JSONException, android.os.RemoteException,
             android.content.OperationApplicationException {
         if (previous == null) {
             return 0;
@@ -458,7 +490,8 @@ public final class SyncEngine {
             if (current.has(sourceId) || !links.containsKey(sourceId)) {
                 continue;
             }
-            if (stopped.getAsBoolean() || !active(settings, generation)) {
+            if (stopped.getAsBoolean()
+                    || !active(settings, generation, requireBackgroundSync)) {
                 return deleted;
             }
             long destinationId = Long.parseLong(links.get(sourceId));
@@ -468,6 +501,7 @@ public final class SyncEngine {
                     Long.parseLong(sourceId), destinationId, "whole-contact");
             long removed = new GuardedContactWriter(context).deleteLinked(
                     operation, Long.parseLong(sourceId), source, to.identity());
+            syncedItems.add(to.displayName());
             log.append("Deleted destination raw contact " + removed
                     + " for deleted source raw contact " + sourceId);
             state.unlink(pairKey, sourceId, Long.toString(removed));
@@ -476,10 +510,19 @@ public final class SyncEngine {
         return deleted;
     }
 
-    /** Rejects a stale pair or pause before performing additional writes. */
-    private static boolean active(SyncSettings settings, long generation) {
+    /** Rejects stale pair settings or a disabled background run before further writes. */
+    private static boolean active(SyncSettings settings, long generation,
+            boolean requireBackgroundSync) {
         synchronized (SyncSettings.LOCK) {
-            return settings.enabled() && settings.generation() == generation;
+            return settings.generation() == generation
+                    && (!requireBackgroundSync || settings.backgroundSyncEnabled());
+        }
+    }
+
+    /** Avoids queuing background work after user decisions when automation is disabled. */
+    private static void requestBackgroundIfEnabled(Context context, SyncSettings settings) {
+        if (settings.backgroundSyncEnabled()) {
+            MonitorScheduler.request(context);
         }
     }
 

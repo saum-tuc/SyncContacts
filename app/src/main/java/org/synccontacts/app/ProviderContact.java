@@ -78,6 +78,30 @@ public final class ProviderContact {
         return Set.copyOf(result);
     }
 
+    /** Returns the contact display name for logs and completed-sync summaries. */
+    public String displayName() {
+        for (ContactComparison.Value value : fields.getOrDefault(NAME, Set.of())) {
+            try {
+                JSONObject nameData = new JSONObject(value.value());
+                String name = nameData.optString("data1", "").trim();
+                if (name.isEmpty()) {
+                    name = String.join(" ", List.of(
+                            nameData.optString("data4", ""),
+                            nameData.optString("data2", ""),
+                            nameData.optString("data5", ""),
+                            nameData.optString("data3", ""),
+                            nameData.optString("data6", ""))).trim().replaceAll("\\s+", " ");
+                }
+                if (!name.isEmpty()) {
+                    return name;
+                }
+            } catch (JSONException error) {
+                throw new IllegalStateException("Invalid stored contact name", error);
+            }
+        }
+        return "Unnamed contact (" + identity.rawId() + ")";
+    }
+
     /** Returns an insertable copy of the exact source rows for planned values. */
     public List<ContentValues> rows(String mime, Set<ContactComparison.Value> values) {
         Map<ContactComparison.Value, ContentValues> available = rows.getOrDefault(mime, Map.of());

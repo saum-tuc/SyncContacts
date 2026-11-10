@@ -31,20 +31,25 @@ pending; do not report success.
    and unavailable states instead of a misleading empty list.
 4. Ask the user to confirm the direction and deletion warning before enabling
    the selected pair. Do not modify either book before confirmation.
-5. Save the selection, request an immediate initial reconciliation, and show
-   its progress, completion, pending decisions, or an actionable error.
+5. Save the selection and run an immediate initial reconciliation, showing
+   progress and then a scrollable, one-name-per-line list of changed contacts,
+   pending decisions, or an actionable error.
+6. Keep automatic background sync disabled by default. It runs only after the
+   user explicitly enables **Enable background sync** in settings; manual sync
+   remains available while automatic sync is disabled.
 
 The user must be able to leave setup without granting access or selecting a
 pair. Sync remains inactive until setup is complete.
 
 ## Main screen
 
-Show the selected source and destination, whether synchronization is enabled,
+Show the selected source and destination, whether background synchronization is enabled,
 the last successful check, and whether work, errors, or user decisions are
 pending. Provide access to **Settings**, **Log**, and the pending-decision
-screen. A manual **Sync now** action requests a check; it must not claim a
-completed sync until work actually completes. While the app is open, display
-progress and errors without blocking unrelated navigation. Explain that
+screen. A manual **Sync now** action runs a check regardless of the background
+setting; it must not claim a completed sync until work actually completes.
+Display an indeterminate spinner while it runs, then a scrollable dialog
+listing each changed contact name on its own line, dismissible with **OK**. Explain that
 background checks are scheduled roughly every four hours, that swiping the app
 away does not disable them, and that Android force-stop or device battery
 restrictions can prevent them until the user takes action.
@@ -53,6 +58,10 @@ restrictions can prevent them until the user takes action.
 
 - Display and allow changing the From and To address books using the same
   discovery and validation rules as first run.
+- Provide an **Enable background sync** setting, unchecked by default. Enabling
+  it schedules periodic checks; disabling it cancels automatic checks. A manual
+  **Sync now** run and the initial sync after changing the pair do not depend on
+  this setting.
 - When a pair is changed, repeat the direction and deletion warning and require
   confirmation. A canceled or invalid change leaves the active pair unchanged.
 - Once confirmed, stop scheduling new work for the old pair, safely finish or
@@ -63,8 +72,6 @@ restrictions can prevent them until the user takes action.
   pair may reuse its mappings only after validating their identities and
   current availability. An old pending decision must never act on the newly
   selected pair.
-- Allow the user to pause and resume synchronization. Resuming requests a
-  fresh check rather than assuming no changes occurred while paused.
 
 ## Individual decisions
 

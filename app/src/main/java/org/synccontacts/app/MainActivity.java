@@ -15,7 +15,9 @@ import android.provider.ContactsContract;
 import android.provider.Settings;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.TextView;
@@ -28,16 +30,17 @@ import java.util.List;
 
 import org.json.JSONException;
 
-/** Provides setup and log access while destination synchronization is unfinished. */
+/** Provides setup, manual synchronization, background settings, and log access. */
 public final class MainActivity extends Activity {
     private static final int CONTACT_PERMISSION_REQUEST = 1;
     private LinearLayout content;
     private boolean observerRegistered;
+    private boolean manualSyncRunning;
     private final ContentObserver observer = new ContentObserver(new Handler(Looper.getMainLooper())) {
         /** Schedules a check when the provider changes while the screen is active. */
         @Override
         public void onChange(boolean selfChange) {
-            if (new SyncSettings(MainActivity.this).enabled()) {
+            if (new SyncSettings(MainActivity.this).backgroundSyncEnabled()) {
                 MonitorScheduler.request(MainActivity.this);
             }
         }
@@ -48,8 +51,10 @@ public final class MainActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         SyncSettings settings = new SyncSettings(this);
-        if (settings.enabled()) {
+        if (settings.backgroundSyncEnabled()) {
             MonitorScheduler.start(this);
+        } else {
+            MonitorScheduler.stop(this);
         }
         showMain();
     }
@@ -100,9 +105,10 @@ public final class MainActivity extends Activity {
             AddressBook destination = settings.destination();
             text(source == null ? "From: not selected" : "From: " + source.label());
             text(destination == null ? "To: not selected" : "To: " + destination.label());
-            text("Monitoring: " + (settings.enabled() ? "enabled" : "paused or not configured"));
+            text("Background sync: "
+                    + (settings.backgroundSyncEnabled() ? "enabled" : "disabled"));
             text(settings.status());
-            text("Checks are scheduled about every four hours. Android may delay work; "
+            text("When enabled, automatic checks run about every four hours. Android may delay work; "
                     + "Force stop prevents it until the app is reopened.");
             int pending = pendingCount(settings, source, destination);
             text("Pending review items: " + pending);
@@ -112,16 +118,7 @@ public final class MainActivity extends Activity {
                 if (pending > 0) {
                     button("Review decisions", this::showDecisions);
                 }
-                button(settings.enabled() ? "Pause monitoring" : "Resume monitoring",
-                        this::toggleMonitoring);
-                button("Check now", () -> {
-                    if (!new SyncSettings(this).enabled()) {
-                        message("Monitoring is paused.");
-                        return;
-                    }
-                    MonitorScheduler.request(this);
-                    message("Sync check requested; it has not necessarily completed.");
-                });
+                button("Sync now", this::startManualSync);
             }
             button("Refresh status", this::showMain);
         } catch (JSONException | IllegalStateException error) {
@@ -196,12 +193,18 @@ public final class MainActivity extends Activity {
             Spinner source = spinner("From", books);
             Spinner destination = spinner("To", books);
             SyncSettings settings = new SyncSettings(this);
+            CheckBox backgroundSync = new CheckBox(this);
+            backgroundSync.setText("Enable background sync");
+            backgroundSync.setChecked(settings.backgroundSyncEnabled());
+            content.addView(backgroundSync);
             int sourceIndex = books.indexOf(settings.source());
             int destinationIndex = books.indexOf(settings.destination());
             source.setSelection(sourceIndex < 0 ? 0 : sourceIndex);
             destination.setSelection(destinationIndex < 0 ? 1 : destinationIndex);
-            button("Save selection", () -> confirmSelection(
-                    (AddressBook) source.getSelectedItem(), (AddressBook) destination.getSelectedItem()));
+            button("Save settings", () -> confirmSelection(
+                    (AddressBook) source.getSelectedItem(),
+                    (AddressBook) destination.getSelectedItem(),
+                    backgroundSync.isChecked()));
             button("Cancel", this::showMain);
         } catch (JSONException | IllegalStateException | SecurityException error) {
             showError("Could not list address books", error);
@@ -209,7 +212,8 @@ public final class MainActivity extends Activity {
     }
 
     /** Confirms direction and the deletion risk before saving a pair. */
-    private void confirmSelection(AddressBook source, AddressBook destination) {
+    private void confirmSelection(AddressBook source, AddressBook destination,
+            boolean backgroundSyncEnabled) {
         if (source.equals(destination)) {
             message("Choose different From and To address books.");
             return;
@@ -220,25 +224,131 @@ public final class MainActivity extends Activity {
                         + "contact deletes its linked destination contact, including any "
                         + "destination-only information. Existing matched destination contacts "
                         + "can also be deleted.")
-                .setPositiveButton("Confirm", (dialog, which) -> saveSelection(source, destination))
+                .setPositiveButton("Confirm", (dialog, which) -> saveSelection(
+                        source, destination, backgroundSyncEnabled))
                 .setNegativeButton("Cancel", null).show();
     }
 
     /** Commits configuration under the same lock used by a monitoring scan. */
-    private void saveSelection(AddressBook source, AddressBook destination) {
+    private void saveSelection(AddressBook source, AddressBook destination,
+            boolean backgroundSyncEnabled) {
         try {
+            SyncSettings settings = new SyncSettings(this);
+            boolean pairChanged = !source.equals(settings.source())
+                    || !destination.equals(settings.destination());
+            boolean backgroundSettingChanged =
+                    settings.backgroundSyncEnabled() != backgroundSyncEnabled;
             synchronized (SyncSettings.LOCK) {
                 ActivityLog log = new ActivityLog(this);
-                log.append("Selected sync pair From " + source.label() + " to " + destination.label());
-                new SyncSettings(this).select(source, destination);
+                if (pairChanged) {
+                    log.append("Selected sync pair From " + source.label()
+                            + " to " + destination.label());
+                    settings.select(source, destination);
+                }
+                if (backgroundSettingChanged) {
+                    settings.setBackgroundSyncEnabled(backgroundSyncEnabled);
+                    log.append("Background sync "
+                            + (backgroundSyncEnabled ? "enabled" : "disabled"));
+                }
                 MonitorScheduler.stop(this);
-                MonitorScheduler.start(this);
+                if (backgroundSyncEnabled) {
+                    MonitorScheduler.start(this);
+                    if (!pairChanged && backgroundSettingChanged) {
+                        MonitorScheduler.request(this);
+                    }
+                }
             }
             showMain();
+            if (pairChanged) {
+                startManualSync();
+            }
         } catch (IOException | JSONException | IllegalArgumentException
                  | IllegalStateException | SecurityException error) {
             showError("Could not save selection", error);
         }
+    }
+
+    /** Runs one reconciliation off the UI thread and presents its changed contact names. */
+    private void startManualSync() {
+        if (manualSyncRunning) {
+            return;
+        }
+        if (!hasPermissions()) {
+            requestSettings();
+            return;
+        }
+        SyncSettings settings = new SyncSettings(this);
+        try {
+            if (settings.source() == null || settings.destination() == null) {
+                message("Choose From and To address books in Settings first.");
+                return;
+            }
+        } catch (JSONException error) {
+            showError("Could not read selected address books", error);
+            return;
+        }
+
+        manualSyncRunning = true;
+        ProgressBar spinner = new ProgressBar(this);
+        spinner.setIndeterminate(true);
+        LinearLayout progress = new LinearLayout(this);
+        progress.setPadding(48, 32, 48, 32);
+        progress.addView(spinner);
+        TextView progressText = new TextView(this);
+        progressText.setText("  Synchronizing contacts...");
+        progress.addView(progressText);
+        AlertDialog progressDialog = new AlertDialog.Builder(this)
+                .setTitle("Syncing")
+                .setView(progress)
+                .setCancelable(false)
+                .create();
+        progressDialog.show();
+
+        new Thread(() -> {
+            try {
+                SyncEngine.RunReport report = SyncEngine.runManual(
+                        getApplicationContext(), () -> false);
+                new Handler(Looper.getMainLooper()).post(() -> {
+                    manualSyncRunning = false;
+                    if (progressDialog.isShowing()) {
+                        progressDialog.dismiss();
+                    }
+                    if (!isFinishing() && !isDestroyed()) {
+                        showSyncSummary(report);
+                    }
+                });
+            } catch (RuntimeException error) {
+                new Handler(Looper.getMainLooper()).post(() -> {
+                    manualSyncRunning = false;
+                    if (progressDialog.isShowing()) {
+                        progressDialog.dismiss();
+                    }
+                    if (!isFinishing() && !isDestroyed()) {
+                        showError("Manual synchronization failed", error);
+                    }
+                });
+            }
+        }, "synccontacts-manual-sync").start();
+    }
+
+    /** Displays every changed contact name on its own line in a scrollable result dialog. */
+    private void showSyncSummary(SyncEngine.RunReport report) {
+        String heading = report.success() ? report.message()
+                : "Synchronization failed: " + report.message();
+        TextView names = new TextView(this);
+        names.setText(report.syncedItems().isEmpty()
+                ? "No contacts were changed."
+                : String.join("\n", report.syncedItems()));
+        names.setTextIsSelectable(true);
+        names.setPadding(32, 16, 32, 16);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(names);
+        new AlertDialog.Builder(this)
+                .setTitle("Sync results")
+                .setMessage(heading)
+                .setView(scroll)
+                .setPositiveButton("OK", (dialog, which) -> showMain())
+                .show();
     }
 
     /** Shows each ambiguous phone match and conflicting field as a separate decision. */
@@ -306,26 +416,6 @@ public final class MainActivity extends Activity {
     private String friendlyField(String mime) {
         String[] parts = mime.split("\\.");
         return parts.length == 0 ? mime : parts[parts.length - 1];
-    }
-
-    /** Pauses or resumes persistent observation, requesting a check on resume. */
-    private void toggleMonitoring() {
-        try {
-            synchronized (SyncSettings.LOCK) {
-                SyncSettings settings = new SyncSettings(this);
-                boolean enabled = !settings.enabled();
-                new ActivityLog(this).append(enabled ? "Monitoring resumed" : "Monitoring paused");
-                settings.setEnabled(enabled);
-                if (enabled) {
-                    MonitorScheduler.start(this);
-                } else {
-                    MonitorScheduler.stop(this);
-                }
-            }
-            showMain();
-        } catch (IOException | IllegalStateException error) {
-            showError("Could not change monitoring state", error);
-        }
     }
 
     /** Shows the private log and explicit export and clearing actions. */

@@ -115,7 +115,9 @@ duplicates or executing stale decisions.
   terminates its process. Automatically restore or continue scheduled work
   after device reboot without requiring the user to open the app, once Android
   permits execution and the required credential-protected data is available.
-  Respect a saved paused state and incomplete setup.
+  Respect the default-off background-sync setting and incomplete setup. Manual
+  runs and the initial synchronization after selecting a pair remain available
+  while automatic background sync is disabled.
 - Coalesce notifications and avoid treating the app's own B writes as A
   changes. Checks operate on source data, even if the provider reports
   notifications for other accounts.

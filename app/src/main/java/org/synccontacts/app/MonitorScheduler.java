@@ -18,13 +18,12 @@ public final class MonitorScheduler {
     private MonitorScheduler() {
     }
 
-    /** Keeps one four-hour schedule and requests a near-term observation. */
+    /** Keeps one persistent four-hour schedule without running unless explicitly requested. */
     public static void start(Context context) {
         WorkManager manager = WorkManager.getInstance(context);
         PeriodicWorkRequest periodic = new PeriodicWorkRequest.Builder(
                 MonitorWorker.class, 4, TimeUnit.HOURS).build();
         manager.enqueueUniquePeriodicWork(PERIODIC, ExistingPeriodicWorkPolicy.KEEP, periodic);
-        request(context);
     }
 
     /** Coalesces redundant provider notifications into one immediate check. */

@@ -55,16 +55,17 @@ and synthetic contacts, especially for deletion tests.
 
 ## Background execution and recovery
 
-18. Setup and a confirmed settings change request an immediate check. While
-    the app is active a provider notification can trigger a check, and unique
-    persistent periodic work is scheduled with a four-hour repeat interval.
-    Verify the configured interval, not an exact execution time.
+18. Changing the selected pair requests an immediate initial sync. Background
+    sync is disabled by default; only when the user enables it are provider
+    notifications and unique persistent periodic work allowed to trigger
+    automatic checks. Verify the configured four-hour interval, not an exact
+    execution time. Manual sync remains available while background sync is off.
 19. Interruptions before and after a destination write, concurrent triggers,
     and restarts do not create duplicate contacts or silently lose operations.
     Recovery checks actual provider state before retrying.
 20. Source changes during an outstanding decision or queued deletion are
-    rechecked before a destination mutation. Pause prevents new sync work;
-    resume requests a fresh check.
+    rechecked before a destination mutation. Disabling background sync prevents
+    new automatic work; manual sync remains available.
 21. The UI distinguishes a completed check from pending decisions, partial
     work, and errors. It does not claim that every intermediate source edit
     was observed or that Android guarantees a specific execution deadline.
@@ -72,13 +73,18 @@ and synthetic contacts, especially for deletion tests.
     verify that scheduled work later runs without reopening the app. Reboot
     the device, unlock it if needed, and verify that scheduled work resumes
     without opening the app. Allow for system scheduling delays. Verify that
-    paused or incomplete setup stays inactive across reboot. Separately test
+    disabled background sync or incomplete setup stays inactive across reboot.
+    Separately test
     Android force-stop: no automatic execution is promised while stopped;
-    launching the app again restores enabled scheduling and requests a check.
+    launching the app again restores scheduling and requests a check only when
+    background sync is enabled.
+22. A manual sync works with background sync disabled, shows a progress spinner,
+    and displays one changed contact name per scrollable result-dialog line.
+    The user can dismiss that dialog with **OK**.
 
 ## Log and privacy
 
-22. Detected additions, modifications, and deletions have timestamped log
+23. Detected additions, modifications, and deletions have timestamped log
     entries; modification entries contain the observed changed fields and
     old/new values when available. Binary content is represented by metadata
     and a digest, not raw bytes.
