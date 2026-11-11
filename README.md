@@ -95,3 +95,8 @@ The Gradle `connectedDebugAndroidTest` task runs on every connected device;
 avoid it when a connected phone contains real contacts.
 
 Product requirements and design details are in [doc/](doc/README.md).
+
+## License
+
+SyncContacts is licensed under the [GNU General Public License](LICENSE),
+version 3 or (at your option) any later version (GPL-3.0-or-later).
