@@ -19,7 +19,8 @@ pending; do not report success.
 
 ## First-run flow
 
-1. Explain that the app needs contact access, performs one-way synchronization,
+1. Prompt the user to select address books. Explain that the app needs contact
+   access, performs one-way synchronization,
    and can delete linked destination contacts when source contacts are deleted.
    In particular, warn that existing destination contacts and their extra
    information can be deleted.
@@ -34,9 +35,9 @@ pending; do not report success.
 5. Save the selection and run an immediate initial reconciliation, showing
    progress and then a scrollable, one-name-per-line list of changed contacts,
    pending decisions, or an actionable error.
-6. Keep automatic background sync disabled by default. It runs only after the
-   user explicitly enables **Enable background sync** in settings; manual sync
-   remains available while automatic sync is disabled.
+6. Enable automatic background sync by default, but do not schedule it until a
+   pair is confirmed. Users can disable it in settings; manual sync remains
+   available while automatic sync is disabled.
 
 The user must be able to leave setup without granting access or selecting a
 pair. Sync remains inactive until setup is complete.
@@ -45,12 +46,12 @@ pair. Sync remains inactive until setup is complete.
 
 Show the selected source and destination, whether background synchronization is enabled,
 the last successful check, and whether work, errors, or user decisions are
-pending. Provide access to **Settings**, **Log**, and the pending-decision
-screen. A manual **Sync now** action runs a check regardless of the background
+pending. Provide access to **Settings** and the pending-decision screen.
+A manual **Force sync now** action runs a check regardless of the background
 setting; it must not claim a completed sync until work actually completes.
 Display an indeterminate spinner while it runs, then a scrollable dialog
 listing each changed contact name on its own line, dismissible with **OK**. Explain that
-background checks are scheduled roughly every four hours, that swiping the app
+background checks use the selected interval and may be delayed, that swiping the app
 away does not disable them, and that Android force-stop or device battery
 restrictions can prevent them until the user takes action.
 
@@ -58,10 +59,18 @@ restrictions can prevent them until the user takes action.
 
 - Display and allow changing the From and To address books using the same
   discovery and validation rules as first run.
-- Provide an **Enable background sync** setting, unchecked by default. Enabling
-  it schedules periodic checks; disabling it cancels automatic checks. A manual
-  **Sync now** run and the initial sync after changing the pair do not depend on
+- Provide an **Enable background sync** setting, checked by default. Enabling
+  it schedules periodic checks once a pair is confirmed; disabling it cancels
+  automatic checks and existing disabled choices remain disabled. A manual
+  **Force sync now** run and the initial sync after changing the pair do not depend on
   this setting.
+- Provide a sync interval selector with 15 minutes, 30 minutes, 1 hour,
+  2 hours, 4 hours, 12 hours, and 24 hours; default to 15 minutes. Saving a
+  change updates the persistent schedule when background sync is enabled.
+- Place the **Logging...** button for the **Log** screen below **Cancel**, separated by one button
+  height. On the Log screen, **Enable logging** is unchecked by
+  default and changes apply immediately. Disabling logging stops new entries
+  without clearing existing ones.
 - When a pair is changed, repeat the direction and deletion warning and require
   confirmation. A canceled or invalid change leaves the active pair unchanged.
 - Once confirmed, stop scheduling new work for the old pair, safely finish or
@@ -96,4 +105,5 @@ and actions to open it in a compatible external app, share it, and clear it
 after confirmation. Opening and sharing use a chooser and temporary read-only
 access to an exported log file; never expose a writable private file. If no
 compatible app exists, or export fails, show an actionable error. Clearing the
-log is itself recorded in the new log, without retaining its old contents.
+log is recorded in the new log only while logging is enabled, without retaining
+its old contents.

@@ -5,9 +5,23 @@ selected source address book to a selected destination. It uses Android's
 Contacts Provider, so both books must be exposed by Android; syncing a
 DAVx5-managed book with its server remains the account sync adapter's job.
 
+## Install and first steps
+
+- Requires Android 8.0+
+- Back up your data before first install! (both address books)
+- Either download .apk file from "releases", or build yourself (instructions below).
+- Requirement: At least two address books must exist on the phone. E.g., "Phone" and "DAVx" contacts.
+- On first run, you have to:
+  - Grant contact permission
+  - Select "From" address book: E.g., "PHONE" contacts. **Don't select "Device-local contacts" here. For me, the correct choice is "Telefon (PHONE)".**
+  - Select "To" address book: E.g., "DAVx" contacts. **Don't select Nextcloud's "ACCOUNTS"/"KONTEN" here. For me, it's the address book name given in DAVx5.**
+  - Select background sync interval. Default is 15 min. Setting it to four hours will suffice in most cases and save battery.
+- By default, background sync is enabled and logging is disabled. In case of any issues enable logging in settings.
+
 ## Current behavior
 
-- Settings discovers the device-local book, books with visible raw contacts,
+- On first run, setup prompts for address-book selection. Settings subsequently
+  discovers the device-local book, books with visible raw contacts,
   and accounts registered with a Contacts sync adapter. The user selects
   distinct **From** and **To** books. Accounts that Android does not expose
   cannot be listed, and provider writability is confirmed only when a write is
@@ -17,20 +31,27 @@ DAVx5-managed book with its server remains the account sync adapter's job.
 - Missing supported source details are added without removing destination-only
   details. Conflicting field values wait for an individual decision. Supported
   data includes names, phones, email, postal addresses, organizations, notes,
-  events, websites, and photos. Unsupported data types are logged and skipped.
+  events, websites, and photos. Unsupported data types are skipped and logged
+  when logging is enabled.
 - Existing matches are linked durably. Deleting a linked source contact deletes
   its destination raw contact, including destination-only details; setup warns
   about this destructive behavior.
-- A private log records detected source changes, destination actions, skipped
-  data, errors, and user decisions. The **Log** screen can share a read-only
-  copy through Android's share sheet or clear the local log.
-- WorkManager checks about every four hours and requests a check after settings
-  changes only when **Enable background sync** is on. This option is off by
-  default. **Sync now** always runs a one-off check, even when background sync
+- **Enable logging** on the **Log** screen, accessible from Settings, is off by
+  default and takes effect immediately.
+  When enabled, a private log records detected source changes, destination
+  actions, skipped data, errors, and user decisions. Disabling logging preserves
+  previous entries; **Logging...** in Settings opens the screen to share or clear them. The separate
+  write journal remains active regardless of this setting.
+- WorkManager checks at the configured interval (15 minutes by default, with
+  choices up to 24 hours) and requests a check after settings
+  changes only when **Enable background sync** is on and a pair is configured.
+  This option is on by default; an existing disabled choice is preserved.
+  **Force sync now** always runs a one-off check, even when background sync
   is disabled; it shows progress and then a scrollable list of changed contact
   names. Selecting a different pair also starts its required initial sync.
   WorkManager persists scheduled work across ordinary process termination and
   device reboot, subject to Android scheduling and battery restrictions.
+  The selected interval is not an exact execution deadline.
   Android force-stop blocks work until the user launches the app.
 
 ## Safety limitations

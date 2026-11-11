@@ -31,15 +31,15 @@ the app, Android project, or any of its features already exists.
    contacts in B without discarding destination-only information.
 3. Match contacts by phone number. When matching or data is ambiguous or
    conflicting, ask the user rather than guessing.
-4. Monitor A for additions, modifications, and deletions using persistent
-   background checks scheduled approximately every four hours. Continue after
+4. When background sync is enabled, check A for additions, modifications, and
+   deletions using persistent checks at the selected interval. Continue after
    ordinary app closure or process termination and automatically resume after
    device reboot, subject to Android's scheduling and lifecycle limits. Apply
    the same matching and reconciliation rules to later changes.
 5. When a linked source contact is deleted, delete its linked destination
    contact, including a contact that existed before initial synchronization.
-6. Maintain a log of detected source changes and actions on B, and let the user
-   open or share the log with another app.
+6. When the user enables logging, maintain a log of detected source changes
+   and actions on B, and let the user open or share it with another app.
 
 ## Important constraints
 
@@ -60,9 +60,12 @@ the app, Android project, or any of its features already exists.
 
 ## Agreed behavior
 
-- The periodic check interval is four hours, subject to Android scheduling.
-  The app also requests an immediate check after configuration and responds to
-  provider notifications while its process is active.
+- Background sync is enabled by default; logging is disabled by default.
+  When background sync is enabled and a pair is confirmed, the periodic
+  check interval defaults to 15 minutes and is configurable up to 24 hours, subject to Android
+  scheduling, and provider notifications can request checks while the app is
+  active. A changed address-book selection starts an initial sync regardless
+  of the background setting.
 - A source contact with no usable phone number is treated as unmatched and
   copied to B. The app warns that an existing destination contact without a
   matching phone number cannot be recognized automatically.

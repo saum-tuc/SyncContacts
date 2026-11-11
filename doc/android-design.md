@@ -18,22 +18,25 @@ by the destination account's sync adapter.
 
 An Android `ContentObserver` can provide change hints while the app process
 exists; it must not be the only mechanism used to monitor changes. Use AndroidX
-WorkManager persistent unique periodic work with a four-hour repeat interval
+WorkManager persistent unique periodic work with the selected repeat interval
 for reconciliation and recovery. The job must remain scheduled when the app
 is swiped away or its process is killed, and must be restored across reboot
 without requiring an app launch. Rely on WorkManager's supported reboot
 rescheduling rather than an independent duplicate scheduler; verify that its
 required boot integration remains enabled in the merged manifest. Do not
 schedule periodic checks while setup is incomplete or **Enable background
-sync** is off, including after a reboot. That setting is off by default. A
+sync** is off, including after a reboot. That setting is on by default, while
+an explicitly saved disabled choice is preserved. A
 user-requested manual run and the initial reconciliation after changing the
 pair may run while background sync is disabled.
 
 WorkManager persists its work across app restarts and device reboots, but
 actual execution is subject to Android scheduling, battery management, device
 manufacturer restrictions, and credential-protected storage availability.
-Checks may run earlier or later than four hours. A reboot check may need to
-wait until the user unlocks the device. Do not claim continuous monitoring or
+The interval defaults to 15 minutes; the available choices range from
+15 minutes to 24 hours. An existing schedule is updated to match saved settings.
+Checks may run later than the selected interval. A reboot check may need to
+wait until the user unlocks the device. Do not claim continuous background sync or
 an exact deadline.
 
 An Android system force-stop, including Force stop in app settings, is not
@@ -85,9 +88,12 @@ safely.
 
 ## Log specification
 
-Maintain a chronological, timestamped, human-readable UTF-8 log in
-app-private storage. Each entry identifies the event, selected pair, affected
-contact or safe local identifier, and outcome as applicable. Include:
+When enabled on the Log screen, maintain a chronological, timestamped, human-readable
+UTF-8 log in app-private storage. Logging is disabled by default; disabling it
+stops new entries but retains existing entries until cleared. The separate
+write journal remains enabled for safety. Each log entry identifies the event,
+selected pair, affected contact or safe local identifier, and outcome as
+applicable. Include:
 
 - Configuration changes, checks started and completed, partial scans, and
   scheduling or permission failures.

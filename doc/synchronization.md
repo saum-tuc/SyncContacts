@@ -64,7 +64,7 @@ Multiple values are not automatically a conflict merely because one side has
 extra values. Incompatible values for a logically single-valued field, or
 values whose safe combination cannot be established, require a decision.
 Where a contact has both nonconflicting additions and conflicts, the app may
-apply the additions independently, but must log them and clearly leave the
+apply the additions independently, but must log them when logging is enabled and clearly leave the
 conflicting part pending.
 
 The implementation must define and test equality, multiplicity, and conflict
@@ -109,13 +109,13 @@ duplicates or executing stale decisions.
 
 - Request initial work immediately after confirmation and when settings change.
   While the app process is active, contact-provider notifications can trigger
-  a check. Schedule unique persistent periodic work with a four-hour interval;
-  Android may run it somewhat earlier or later, and exact timing is not required.
-- Keep monitoring scheduled after the user swipes the app away or Android
+  a check. Schedule unique persistent periodic work at the selected interval,
+  defaulting to 15 minutes; Android may delay execution and exact timing is not required.
+- Keep background sync scheduled after the user swipes the app away or Android
   terminates its process. Automatically restore or continue scheduled work
   after device reboot without requiring the user to open the app, once Android
   permits execution and the required credential-protected data is available.
-  Respect the default-off background-sync setting and incomplete setup. Manual
+  Respect the background-sync setting, which is on by default, and incomplete setup. Manual
   runs and the initial synchronization after selecting a pair remain available
   while automatic background sync is disabled.
 - Coalesce notifications and avoid treating the app's own B writes as A
@@ -131,10 +131,10 @@ duplicates or executing stale decisions.
   destinations, partial operations, and missing accounts as failures, not
   successful synchronizations. Keep recoverable work pending and surface
   errors in the UI and log when logging is available.
-- Log source observations, decisions, intended and completed B actions, and
-  failures as specified in [Android and data design](android-design.md).
-  Preserve enough durable action state to recover from interruption between a
-  provider operation and its outcome being logged.
+- When logging is enabled, log source observations, decisions, intended and
+  completed B actions, and failures as specified in
+  [Android and data design](android-design.md). Preserve durable action state
+  independently of logging.
 
 Polling observes current state, not an immutable change feed: if a contact is
 changed several times between checks, only the net change may be detected.
