@@ -10,7 +10,7 @@ import androidx.work.WorkManager;
 
 import java.util.concurrent.TimeUnit;
 
-/** Schedules persistent, unique source-monitoring work. */
+/** Schedules persistent, unique background-sync work. */
 public final class MonitorScheduler {
     public static final String PERIODIC = "source-monitor-periodic";
     public static final String IMMEDIATE = "source-monitor-immediate";
@@ -18,12 +18,13 @@ public final class MonitorScheduler {
     private MonitorScheduler() {
     }
 
-    /** Keeps one persistent four-hour schedule without running unless explicitly requested. */
+    /** Creates or updates the persistent schedule to match the saved interval. */
     public static void start(Context context) {
         WorkManager manager = WorkManager.getInstance(context);
         PeriodicWorkRequest periodic = new PeriodicWorkRequest.Builder(
-                MonitorWorker.class, 4, TimeUnit.HOURS).build();
-        manager.enqueueUniquePeriodicWork(PERIODIC, ExistingPeriodicWorkPolicy.KEEP, periodic);
+                MonitorWorker.class, new SyncSettings(context).syncInterval().minutes(),
+                TimeUnit.MINUTES).build();
+        manager.enqueueUniquePeriodicWork(PERIODIC, ExistingPeriodicWorkPolicy.UPDATE, periodic);
     }
 
     /** Coalesces redundant provider notifications into one immediate check. */

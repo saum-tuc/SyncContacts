@@ -23,11 +23,16 @@ import android.provider.ContactsContract;
 import android.util.AtomicFile;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.widget.CheckBox;
+import android.widget.Spinner;
 import android.widget.TextView;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.work.ListenableWorker;
+import androidx.work.WorkInfo;
+import androidx.work.WorkManager;
 import androidx.work.testing.TestWorkerBuilder;
 
 import org.json.JSONObject;
@@ -38,7 +43,9 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 /** Exercises private logging and account-scoped scans on an Android device. */
 @RunWith(AndroidJUnit4.class)
@@ -53,7 +60,8 @@ public final class PlatformTest {
         try {
             instrumentation.runOnMainSync(() -> assertTrue(containsText(
                     activity.findViewById(android.R.id.content),
-                "One-way sync copies")));
+                "One-way sync copies") || containsText(
+                        activity.findViewById(android.R.id.content), "Settings")));
         } finally {
             instrumentation.runOnMainSync(activity::finish);
         }
@@ -75,6 +83,165 @@ public final class PlatformTest {
         return false;
     }
 
+    /** Finds a control by its exact label for activity navigation checks. */
+    private View findText(View view, String label) {
+        if (view instanceof TextView && ((TextView) view).getText().toString().equals(label)) {
+            return view;
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = findText(group.getChildAt(i), label);
+                if (found != null) {
+                    return found;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Verifies first-run setup, settings log controls, and the configured main screen. */
+    @Test
+    public void testFirstRunAndSettingsNavigation() throws Exception {
+        var instrumentation = InstrumentationRegistry.getInstrumentation();
+        var automation = instrumentation.getUiAutomation();
+        Context target = instrumentation.getTargetContext();
+        SharedPreferences preferences = target.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        Map<String, ?> original = preferences.getAll();
+        String[] keys = {"source", "destination", "generation", "status",
+                "background_sync_enabled", "logging_enabled", "sync_interval_minutes"};
+        AddressBook source = new AddressBook("ui-" + UUID.randomUUID(),
+                "org.synccontacts.synthetic", null);
+        Uri anchor = insertRawContact(target.getContentResolver(), source);
+        MainActivity activity = null;
+        try {
+            assertTrue(preferences.edit().remove("source").remove("destination")
+                    .remove("background_sync_enabled")
+                    .remove("sync_interval_minutes")
+                    .remove("logging_enabled").commit());
+            Intent intent = new Intent(target, MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            activity = (MainActivity) instrumentation.startActivitySync(intent);
+            MainActivity setup = activity;
+            instrumentation.waitForIdleSync();
+            target.getContentResolver().notifyChange(
+                    ContactsContract.RawContacts.CONTENT_URI, null);
+            instrumentation.waitForIdleSync();
+            WorkManager manager = WorkManager.getInstance(target);
+            for (String name : new String[]{MonitorScheduler.PERIODIC, MonitorScheduler.IMMEDIATE}) {
+                for (WorkInfo work : manager.getWorkInfosForUniqueWork(name).get()) {
+                    assertTrue("Unexpected automatic work before setup: " + name,
+                            work.getState().isFinished());
+                }
+            }
+            instrumentation.runOnMainSync(() -> {
+                View root = setup.findViewById(android.R.id.content);
+                assertNotNull(findText(root, "Settings"));
+                assertNotNull(findText(root, "From"));
+                assertNotNull(findText(root, "To"));
+                assertTrue(((CheckBox) findText(root, "Enable background sync")).isChecked());
+                View intervalLabel = findText(root, "Background sync interval");
+                assertNotNull(intervalLabel);
+                ViewGroup parent = (ViewGroup) intervalLabel.getParent();
+                Spinner interval = (Spinner) parent.getChildAt(parent.indexOfChild(intervalLabel) + 1);
+                assertEquals(7, interval.getCount());
+                assertEquals(SyncInterval.MINUTES_15, interval.getSelectedItem());
+                for (int i = 0; i < SyncInterval.values().length; i++) {
+                    assertEquals(SyncInterval.values()[i], interval.getItemAtPosition(i));
+                }
+                assertNull(findText(root, "Enable logging"));
+                View cancel = findText(root, "Cancel");
+                View logButton = findText(root, "Logging...");
+                assertNotNull(cancel);
+                assertNotNull(logButton);
+                assertTrue(cancel.getHeight() > 0);
+                assertEquals(cancel.getHeight(), logButton.getTop() - cancel.getBottom());
+                findText(root, "Logging...").performClick();
+                root = setup.findViewById(android.R.id.content);
+                assertNotNull(findText(root, "Open log"));
+                CheckBox logging = (CheckBox) findText(root, "Enable logging");
+                assertNotNull(logging);
+                assertFalse(logging.isChecked());
+                logging.performClick();
+                assertTrue(new SyncSettings(target).loggingEnabled());
+                findText(setup.findViewById(android.R.id.content), "Back").performClick();
+                assertNull(findText(setup.findViewById(android.R.id.content), "Enable logging"));
+                findText(setup.findViewById(android.R.id.content), "Logging...").performClick();
+                assertTrue(((CheckBox) findText(setup.findViewById(android.R.id.content),
+                        "Enable logging")).isChecked());
+                setup.finish();
+            });
+            activity = null;
+            new SyncSettings(target).setBackgroundSyncEnabled(false);
+            new SyncSettings(target).select(source, new AddressBook(null, null, null));
+            activity = (MainActivity) instrumentation.startActivitySync(intent);
+            MainActivity configured = activity;
+            instrumentation.runOnMainSync(() -> {
+                View root = configured.findViewById(android.R.id.content);
+                assertNotNull(findText(root, "Force sync now"));
+                assertNull(findText(root, "Logging..."));
+                findText(root, "Settings").performClick();
+                root = configured.findViewById(android.R.id.content);
+                View label = findText(root, "Background sync interval");
+                ViewGroup parent = (ViewGroup) label.getParent();
+                Spinner interval = (Spinner) parent.getChildAt(parent.indexOfChild(label) + 1);
+                interval.setSelection(SyncInterval.HOURS_24.ordinal());
+                findText(root, "Save settings").performClick();
+            });
+            instrumentation.waitForIdleSync();
+            AccessibilityNodeInfo window = automation.getRootInActiveWindow();
+            assertNotNull(window);
+            var confirms = window.findAccessibilityNodeInfosByText("Confirm");
+            AccessibilityNodeInfo confirm = null;
+            for (AccessibilityNodeInfo node : confirms) {
+                if (node.getText() != null
+                        && "Confirm".equalsIgnoreCase(node.getText().toString())
+                        && node.isClickable()) {
+                    confirm = node;
+                    break;
+                }
+            }
+            assertNotNull("Confirm button not found in " + confirms, confirm);
+            assertTrue(confirm.performAction(AccessibilityNodeInfo.ACTION_CLICK));
+            instrumentation.waitForIdleSync();
+            assertEquals(SyncInterval.HOURS_24, new SyncSettings(target).syncInterval());
+            assertFalse(new SyncSettings(target).backgroundSyncEnabled());
+            instrumentation.runOnMainSync(() -> {
+                View root = configured.findViewById(android.R.id.content);
+                findText(root, "Settings").performClick();
+                root = configured.findViewById(android.R.id.content);
+                View label = findText(root, "Background sync interval");
+                ViewGroup parent = (ViewGroup) label.getParent();
+                Spinner interval = (Spinner) parent.getChildAt(parent.indexOfChild(label) + 1);
+                assertEquals(SyncInterval.HOURS_24, interval.getSelectedItem());
+                interval.setSelection(SyncInterval.MINUTES_30.ordinal());
+                findText(root, "Cancel").performClick();
+            });
+            assertEquals(SyncInterval.HOURS_24, new SyncSettings(target).syncInterval());
+        } finally {
+            if (activity != null) {
+                MainActivity toFinish = activity;
+                instrumentation.runOnMainSync(toFinish::finish);
+            }
+            SharedPreferences.Editor restore = preferences.edit();
+            for (String key : keys) {
+                Object value = original.get(key);
+                if (value instanceof String) {
+                    restore.putString(key, (String) value);
+                } else if (value instanceof Boolean) {
+                    restore.putBoolean(key, (Boolean) value);
+                } else if (value instanceof Long) {
+                    restore.putLong(key, (Long) value);
+                } else if (value instanceof Integer) {
+                    restore.putInt(key, (Integer) value);
+                } else {
+                    restore.remove(key);
+                }
+            }
+            assertTrue(restore.commit());
+            target.getContentResolver().delete(anchor, null, null);
+        }
+    }
+
     /** Round-trips address-book components, including null and empty strings. */
     @Test
     public void testAddressBookSerialization() throws Exception {
@@ -92,6 +259,7 @@ public final class PlatformTest {
     @Test
     public void testPrivateLog() throws Exception {
         Context context = isolatedContext();
+        new SyncSettings(context).setLoggingEnabled(true);
         ActivityLog log = new ActivityLog(context);
         log.clear();
         log.append("synthetic event");
@@ -105,6 +273,31 @@ public final class PlatformTest {
         assertFalse(secondExport.exists());
         assertFalse(log.read().contains("synthetic event"));
         assertTrue(log.read().contains("Log cleared by user"));
+    }
+
+    /** Disabling logging stops new entries without erasing existing private log data. */
+    @Test
+    public void testLoggingIsOptInAndPreservesEarlierEntries() throws Exception {
+        Context context = isolatedContext();
+        try {
+            SyncSettings settings = new SyncSettings(context);
+            ActivityLog log = new ActivityLog(context);
+            assertFalse(settings.loggingEnabled());
+            log.append("not recorded");
+            assertEquals("", log.read());
+            assertFalse(new File(context.getFilesDir(), "activity.log").exists());
+            settings.setLoggingEnabled(true);
+            log.append("recorded");
+            assertTrue(log.read().contains("recorded"));
+            settings.setLoggingEnabled(false);
+            log.appendAll(java.util.List.of("not recorded after disabling"));
+            assertTrue(log.read().contains("recorded"));
+            assertFalse(log.read().contains("not recorded"));
+            log.clear();
+            assertEquals("", log.read());
+        } finally {
+            cleanupIsolatedContext(context);
+        }
     }
 
     /** Inserts and removes only one synthetic raw contact, then checks its snapshot. */
@@ -204,6 +397,7 @@ public final class PlatformTest {
             assertEquals(source, readBook(resolver, ContentUris.parseId(anchor)));
             AddressBook destination = new AddressBook(null, null, null);
             SyncSettings settings = new SyncSettings(context);
+            settings.setLoggingEnabled(true);
             settings.select(source, destination);
             settings.setBackgroundSyncEnabled(true);
             snapshot = ContactSnapshot.file(context.getFilesDir(), source, destination);
@@ -260,6 +454,7 @@ public final class PlatformTest {
         String email = "engine-" + UUID.randomUUID() + "@example.test";
         Uri destination = null;
         try {
+            new SyncSettings(context).setLoggingEnabled(true);
             insertValue(resolver, sourceId,
                     ContactsContract.CommonDataKinds.StructuredName.CONTENT_ITEM_TYPE,
                     "Engine Synthetic");
@@ -268,6 +463,7 @@ public final class PlatformTest {
             insertValue(resolver, sourceId,
                     ContactsContract.CommonDataKinds.Email.CONTENT_ITEM_TYPE, email);
             new SyncSettings(context).select(sourceBook, destinationBook);
+            new SyncSettings(context).setBackgroundSyncEnabled(false);
             assertFalse(new SyncSettings(context).backgroundSyncEnabled());
             assertEquals(ListenableWorker.Result.success(),
                     SyncEngine.run(context, () -> false));
@@ -496,20 +692,100 @@ public final class PlatformTest {
         assertTrue(ContactBooks.discover(context).contains(new AddressBook(null, null, null)));
     }
 
-    /** Keeps background sync disabled by default, including after pair configuration. */
+    /** Enables background sync by default and preserves a user's explicit choice. */
     @Test
-    public void testBackgroundSyncDefaultsDisabled() throws Exception {
+    public void testBackgroundSyncDefaultsEnabled() throws Exception {
         Context context = isolatedContext();
         try {
             SyncSettings settings = new SyncSettings(context);
-            assertFalse(settings.backgroundSyncEnabled());
+            assertTrue(settings.backgroundSyncEnabled());
             settings.select(new AddressBook("source", "test", null),
                     new AddressBook("destination", "test", null));
+            assertTrue(settings.backgroundSyncEnabled());
+            settings.setBackgroundSyncEnabled(false);
             assertFalse(settings.backgroundSyncEnabled());
+            assertFalse(new SyncSettings(context).backgroundSyncEnabled());
             settings.setBackgroundSyncEnabled(true);
             assertTrue(settings.backgroundSyncEnabled());
         } finally {
             cleanupIsolatedContext(context);
+        }
+    }
+
+    /** Verifies every persisted choice and the default for an existing installation. */
+    @Test
+    public void testSyncIntervalsPersist() {
+        Context context = isolatedContext();
+        try {
+            SyncSettings settings = new SyncSettings(context);
+            assertEquals(SyncInterval.MINUTES_15, settings.syncInterval());
+            for (SyncInterval interval : SyncInterval.values()) {
+                settings.setSyncInterval(interval);
+                assertEquals(interval, new SyncSettings(context).syncInterval());
+            }
+            try {
+                SyncInterval.fromMinutes(5);
+                fail("Unsupported intervals must be rejected");
+            } catch (IllegalStateException expected) {
+                assertTrue(expected.getMessage().contains("5"));
+            }
+        } finally {
+            cleanupIsolatedContext(context);
+        }
+    }
+
+    /** Verifies the actual unique WorkManager schedule is updated for every interval. */
+    @Test
+    public void testConfiguredPeriodicScheduleUpdates() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        SharedPreferences preferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        Map<String, ?> original = preferences.getAll();
+        WorkManager manager = WorkManager.getInstance(context);
+        try {
+            assertTrue(preferences.edit().putBoolean("background_sync_enabled", false).commit());
+            manager.cancelUniqueWork(MonitorScheduler.PERIODIC).getResult().get();
+            UUID workId = null;
+            for (SyncInterval interval : SyncInterval.values()) {
+                new SyncSettings(context).setSyncInterval(interval);
+                MonitorScheduler.start(context);
+                WorkInfo active = null;
+                for (WorkInfo work : manager.getWorkInfosForUniqueWork(MonitorScheduler.PERIODIC).get()) {
+                    if (!work.getState().isFinished()) {
+                        assertNull("Only one periodic schedule should be active", active);
+                        active = work;
+                    }
+                }
+                assertNotNull(active);
+                assertNotNull(active.getPeriodicityInfo());
+                assertEquals(TimeUnit.MINUTES.toMillis(interval.minutes()),
+                        active.getPeriodicityInfo().getRepeatIntervalMillis());
+                if (workId != null) {
+                    assertEquals(workId, active.getId());
+                }
+                workId = active.getId();
+            }
+        } finally {
+            manager.cancelUniqueWork(MonitorScheduler.PERIODIC).getResult().get();
+            SharedPreferences.Editor restore = preferences.edit();
+            Object enabled = original.get("background_sync_enabled");
+            if (enabled instanceof Boolean) {
+                restore.putBoolean("background_sync_enabled", (Boolean) enabled);
+            } else {
+                restore.remove("background_sync_enabled");
+            }
+            Object interval = original.get("sync_interval_minutes");
+            if (interval instanceof Integer) {
+                restore.putInt("sync_interval_minutes", (Integer) interval);
+            } else {
+                restore.remove("sync_interval_minutes");
+            }
+            assertTrue(restore.commit());
+            SyncSettings settings = new SyncSettings(context);
+            if (settings.backgroundSyncEnabled() && settings.source() != null
+                    && settings.destination() != null
+                    && !settings.source().equals(settings.destination())) {
+                MonitorScheduler.start(context);
+            }
         }
     }
 

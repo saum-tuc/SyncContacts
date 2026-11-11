@@ -10,6 +10,7 @@ import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.content.SharedPreferences;
 import android.database.Cursor;
 import android.database.DatabaseErrorHandler;
 import android.database.sqlite.SQLiteDatabase;
@@ -68,6 +69,11 @@ public final class GuardedContactWriterTest {
             }
 
             @Override
+            public SharedPreferences getSharedPreferences(String name, int mode) {
+                return target.getSharedPreferences(prefix + name, mode);
+            }
+
+            @Override
             public SQLiteDatabase openOrCreateDatabase(String name, int mode,
                     SQLiteDatabase.CursorFactory factory) {
                 return target.openOrCreateDatabase(prefix + name, mode, factory);
@@ -79,6 +85,7 @@ public final class GuardedContactWriterTest {
                 return target.openOrCreateDatabase(prefix + name, mode, factory, handler);
             }
         };
+        new SyncSettings(context).setLoggingEnabled(true);
     }
 
     /** Removes only this test's named database and private log files. */
@@ -88,6 +95,7 @@ public final class GuardedContactWriterTest {
             return;
         }
         target.deleteDatabase(prefix + "contact-write-journal.db");
+        target.deleteSharedPreferences(prefix + "settings");
         for (String name : List.of("activity.log", "activity.log.bak", "activity.log.new")) {
             File file = new File(files, name);
             if (file.exists()) {
@@ -411,6 +419,37 @@ public final class GuardedContactWriterTest {
             if (invalidDirectory.exists()) {
                 assertTrue(invalidDirectory.delete());
             }
+        }
+    }
+
+    /** Destination writes still use the durable journal when activity logging is disabled. */
+    @Test
+    public void writesAreJournaledWhenLoggingIsDisabled() throws Exception {
+        new SyncSettings(context).setLoggingEnabled(false);
+        ContentResolver resolver = context.getContentResolver();
+        Uri sourceUri = insertSource(resolver);
+        Uri destinationUri = null;
+        try {
+            String operationId = UUID.randomUUID().toString();
+            GuardedContactWriter.VersionedContact source = version(
+                    resolver, ContentUris.parseId(sourceUri));
+            long destinationId = new GuardedContactWriter(context).create(
+                    operationId, source, DESTINATION_BOOK,
+                    List.of(row(ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE,
+                            "synthetic unlogged write")));
+            destinationUri = ContentUris.withAppendedId(
+                    ContactsContract.RawContacts.CONTENT_URI, destinationId);
+            assertEquals(1, count(resolver, destinationId,
+                    ContactsContract.CommonDataKinds.Note.CONTENT_ITEM_TYPE));
+            assertTrue(!new File(files, "activity.log").exists());
+            try (ContactWriteJournal journal = new ContactWriteJournal(context)) {
+                assertEquals("complete", journal.find(operationId).state());
+            }
+        } finally {
+            if (destinationUri != null) {
+                resolver.delete(destinationUri, null, null);
+            }
+            resolver.delete(sourceUri, null, null);
         }
     }
 

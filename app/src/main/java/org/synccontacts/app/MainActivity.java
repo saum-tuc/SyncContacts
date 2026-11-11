@@ -13,6 +13,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.provider.ContactsContract;
 import android.provider.Settings;
+import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
@@ -40,8 +41,13 @@ public final class MainActivity extends Activity {
         /** Schedules a check when the provider changes while the screen is active. */
         @Override
         public void onChange(boolean selfChange) {
-            if (new SyncSettings(MainActivity.this).backgroundSyncEnabled()) {
-                MonitorScheduler.request(MainActivity.this);
+            SyncSettings settings = new SyncSettings(MainActivity.this);
+            try {
+                if (settings.backgroundSyncEnabled() && hasSelectedPair(settings)) {
+                    MonitorScheduler.request(MainActivity.this);
+                }
+            } catch (JSONException error) {
+                showError("Could not read selected address books", error);
             }
         }
     };
@@ -51,12 +57,28 @@ public final class MainActivity extends Activity {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         SyncSettings settings = new SyncSettings(this);
-        if (settings.backgroundSyncEnabled()) {
-            MonitorScheduler.start(this);
-        } else {
-            MonitorScheduler.stop(this);
+        try {
+            boolean configured = hasSelectedPair(settings);
+            if (configured && settings.backgroundSyncEnabled()) {
+                MonitorScheduler.start(this);
+            } else {
+                MonitorScheduler.stop(this);
+            }
+            showMain();
+            if (state == null && !configured) {
+                requestSettings();
+            }
+        } catch (JSONException | IllegalStateException error) {
+            showMain();
+            showError("Could not read selected address books", error);
         }
-        showMain();
+    }
+
+    /** Treats only distinct, fully selected books as ready for automatic work. */
+    private boolean hasSelectedPair(SyncSettings settings) throws JSONException {
+        AddressBook source = settings.source();
+        AddressBook destination = settings.destination();
+        return source != null && destination != null && !source.equals(destination);
     }
 
     /** Registers provider notifications only while the app is visible. */
@@ -108,17 +130,17 @@ public final class MainActivity extends Activity {
             text("Background sync: "
                     + (settings.backgroundSyncEnabled() ? "enabled" : "disabled"));
             text(settings.status());
-            text("When enabled, automatic checks run about every four hours. Android may delay work; "
+            text("Background sync interval: " + settings.syncInterval());
+            text("When enabled, automatic checks run at the selected interval. Android may delay work; "
                     + "Force stop prevents it until the app is reopened.");
             int pending = pendingCount(settings, source, destination);
             text("Pending review items: " + pending);
             button("Settings", this::requestSettings);
-            button("Log", this::showLog);
             if (source != null && destination != null) {
                 if (pending > 0) {
                     button("Review decisions", this::showDecisions);
                 }
-                button("Sync now", this::startManualSync);
+                button("Force sync now", this::startManualSync);
             }
             button("Refresh status", this::showMain);
         } catch (JSONException | IllegalStateException error) {
@@ -144,8 +166,9 @@ public final class MainActivity extends Activity {
             showSettings();
             return;
         }
-        new AlertDialog.Builder(this).setTitle("Contact access")
-                .setMessage("SyncContacts needs contact access for one-way synchronization. "
+        new AlertDialog.Builder(this).setTitle("Choose address books")
+                .setMessage("To choose address books, SyncContacts needs contact access "
+                        + "for one-way synchronization. "
                         + "The planned sync can delete a linked destination contact, including "
                         + "one that already existed. This app can write to the selected destination.")
                 .setPositiveButton("Continue", (dialog, which) -> requestPermissions(
@@ -173,7 +196,7 @@ public final class MainActivity extends Activity {
             observerRegistered = true;
         } catch (SecurityException error) {
             getContentResolver().unregisterContentObserver(observer);
-            showError("Could not monitor contacts", error);
+            showError("Could not observe contacts for background sync", error);
         }
     }
 
@@ -184,19 +207,27 @@ public final class MainActivity extends Activity {
             resetView("Settings");
             text("Books are discovered from Android contacts and available contacts accounts. "
                     + "Destination writability depends on its account provider.");
+            SyncSettings settings = new SyncSettings(this);
             if (books.size() < 2) {
                 text("At least two distinct visible address books are needed. "
                         + "Check contact permissions and account availability.");
-                button("Back", this::showMain);
+                addLogAfter(button("Back", this::showMain));
                 return;
             }
             Spinner source = spinner("From", books);
             Spinner destination = spinner("To", books);
-            SyncSettings settings = new SyncSettings(this);
             CheckBox backgroundSync = new CheckBox(this);
             backgroundSync.setText("Enable background sync");
             backgroundSync.setChecked(settings.backgroundSyncEnabled());
             content.addView(backgroundSync);
+            text("Background sync interval");
+            Spinner interval = new Spinner(this);
+            ArrayAdapter<SyncInterval> intervals = new ArrayAdapter<>(this,
+                    android.R.layout.simple_spinner_item, SyncInterval.values());
+            intervals.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+            interval.setAdapter(intervals);
+            interval.setSelection(settings.syncInterval().ordinal());
+            content.addView(interval);
             int sourceIndex = books.indexOf(settings.source());
             int destinationIndex = books.indexOf(settings.destination());
             source.setSelection(sourceIndex < 0 ? 0 : sourceIndex);
@@ -204,8 +235,8 @@ public final class MainActivity extends Activity {
             button("Save settings", () -> confirmSelection(
                     (AddressBook) source.getSelectedItem(),
                     (AddressBook) destination.getSelectedItem(),
-                    backgroundSync.isChecked()));
-            button("Cancel", this::showMain);
+                    backgroundSync.isChecked(), (SyncInterval) interval.getSelectedItem()));
+            addLogAfter(button("Cancel", this::showMain));
         } catch (JSONException | IllegalStateException | SecurityException error) {
             showError("Could not list address books", error);
         }
@@ -213,7 +244,7 @@ public final class MainActivity extends Activity {
 
     /** Confirms direction and the deletion risk before saving a pair. */
     private void confirmSelection(AddressBook source, AddressBook destination,
-            boolean backgroundSyncEnabled) {
+            boolean backgroundSyncEnabled, SyncInterval interval) {
         if (source.equals(destination)) {
             message("Choose different From and To address books.");
             return;
@@ -225,13 +256,13 @@ public final class MainActivity extends Activity {
                         + "destination-only information. Existing matched destination contacts "
                         + "can also be deleted.")
                 .setPositiveButton("Confirm", (dialog, which) -> saveSelection(
-                        source, destination, backgroundSyncEnabled))
+                        source, destination, backgroundSyncEnabled, interval))
                 .setNegativeButton("Cancel", null).show();
     }
 
-    /** Commits configuration under the same lock used by a monitoring scan. */
+    /** Commits configuration under the same lock used by a background sync. */
     private void saveSelection(AddressBook source, AddressBook destination,
-            boolean backgroundSyncEnabled) {
+            boolean backgroundSyncEnabled, SyncInterval interval) {
         try {
             SyncSettings settings = new SyncSettings(this);
             boolean pairChanged = !source.equals(settings.source())
@@ -250,7 +281,13 @@ public final class MainActivity extends Activity {
                     log.append("Background sync "
                             + (backgroundSyncEnabled ? "enabled" : "disabled"));
                 }
-                MonitorScheduler.stop(this);
+                if (settings.syncInterval() != interval) {
+                    settings.setSyncInterval(interval);
+                    log.append("Background sync interval set to " + interval);
+                }
+                if (pairChanged || !backgroundSyncEnabled) {
+                    MonitorScheduler.stop(this);
+                }
                 if (backgroundSyncEnabled) {
                     MonitorScheduler.start(this);
                     if (!pairChanged && backgroundSettingChanged) {
@@ -424,10 +461,25 @@ public final class MainActivity extends Activity {
             resetView("Log");
             text("The log contains sensitive contact information. Apps you share it with "
                     + "may retain or transmit a copy.");
+            SyncSettings settings = new SyncSettings(this);
+            CheckBox logging = new CheckBox(this);
+            logging.setText("Enable logging");
+            logging.setChecked(settings.loggingEnabled());
+            logging.setOnCheckedChangeListener((view, enabled) -> {
+                try {
+                    settings.setLoggingEnabled(enabled);
+                } catch (IllegalStateException error) {
+                    showLog();
+                    showError("Could not change logging setting", error);
+                }
+            });
+            content.addView(logging);
+            text("Logging changes take effect immediately. Existing log entries remain "
+                    + "available until cleared.");
             button("Open log", () -> confirmExport(false));
             button("Share log", () -> confirmExport(true));
             button("Clear log", this::confirmClear);
-            button("Back", this::showMain);
+            button("Back", this::showSettings);
             text(new ActivityLog(this).read());
         } catch (IOException error) {
             showError("Could not read log", error);
@@ -499,11 +551,27 @@ public final class MainActivity extends Activity {
     }
 
     /** Adds an action button to the current screen. */
-    private void button(String label, Runnable action) {
+    private Button button(String label, Runnable action) {
         Button button = new Button(this);
         button.setText(label);
         button.setOnClickListener(view -> action.run());
         content.addView(button);
+        return button;
+    }
+
+    /** Separates the log action by the measured height of the preceding button. */
+    private void addLogAfter(Button previous) {
+        View spacer = new View(this) {
+            /** Matches the preceding button during the same layout pass. */
+            @Override
+            protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+                setMeasuredDimension(resolveSize(0, widthMeasureSpec),
+                        resolveSize(previous.getMeasuredHeight(), heightMeasureSpec));
+            }
+        };
+        content.addView(spacer, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        button("Logging...", this::showLog);
     }
 
     /** Adds a labeled address-book selector. */

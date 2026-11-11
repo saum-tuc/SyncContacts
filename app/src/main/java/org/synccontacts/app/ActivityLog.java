@@ -16,11 +16,13 @@ public final class ActivityLog {
     private static final Object LOCK = new Object();
     private final AtomicFile file;
     private final File exportDirectory;
+    private final SyncSettings settings;
 
     /** Uses app-private storage, never an externally writable log. */
     public ActivityLog(Context context) {
         file = new AtomicFile(new File(context.getFilesDir(), "activity.log"));
         exportDirectory = new File(context.getCacheDir(), "exports");
+        settings = new SyncSettings(context);
     }
 
     /** Reads the entire log or returns an empty log when none exists yet. */
@@ -39,22 +41,29 @@ public final class ActivityLog {
         appendAll(List.of(message));
     }
 
-    /** Commits all events from one scan in a single atomic replacement. */
+    /** Commits events only while logging is enabled, without touching prior entries otherwise. */
     public void appendAll(List<String> messages) throws IOException {
-        synchronized (LOCK) {
-            StringBuilder updated = new StringBuilder(read());
-            for (String message : messages) {
-                updated.append(Instant.now()).append(' ').append(message).append('\n');
+        synchronized (SyncSettings.LOCK) {
+            if (!settings.loggingEnabled()) {
+                return;
             }
-            write(updated.toString());
+            synchronized (LOCK) {
+                StringBuilder updated = new StringBuilder(read());
+                for (String message : messages) {
+                    updated.append(Instant.now()).append(' ').append(message).append('\n');
+                }
+                write(updated.toString());
+            }
         }
     }
 
-    /** Clears prior entries and durably records the clear event. */
+    /** Clears prior entries and records the clear event only when logging is enabled. */
     public void clear() throws IOException {
-        synchronized (LOCK) {
-            removeExports();
-            write(Instant.now() + " Log cleared by user\n");
+        synchronized (SyncSettings.LOCK) {
+            synchronized (LOCK) {
+                removeExports();
+                write(settings.loggingEnabled() ? Instant.now() + " Log cleared by user\n" : "");
+            }
         }
     }
 

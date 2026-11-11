@@ -5,7 +5,7 @@ import android.content.SharedPreferences;
 
 import org.json.JSONException;
 
-/** Persists the active address-book pair and background-sync preference. */
+/** Persists the address-book pair, background-sync preference, and log setting. */
 public final class SyncSettings {
     public static final Object LOCK = new Object();
     private final SharedPreferences preferences;
@@ -29,7 +29,33 @@ public final class SyncSettings {
 
     /** Indicates whether automatic background synchronization is enabled. */
     public boolean backgroundSyncEnabled() {
-        return preferences.getBoolean("background_sync_enabled", false);
+        return preferences.getBoolean("background_sync_enabled", true);
+    }
+
+    /** Returns the persisted interval or the default for existing and new installations. */
+    public SyncInterval syncInterval() {
+        return SyncInterval.fromMinutes(preferences.getInt("sync_interval_minutes", 15));
+    }
+
+    /** Stores the chosen background interval for the next schedule update. */
+    public void setSyncInterval(SyncInterval interval) {
+        if (!preferences.edit().putInt("sync_interval_minutes", interval.minutes()).commit()) {
+            throw new IllegalStateException("Could not save background sync interval");
+        }
+    }
+
+    /** Indicates whether optional activity-log entries are recorded. */
+    public boolean loggingEnabled() {
+        return preferences.getBoolean("logging_enabled", false);
+    }
+
+    /** Changes logging atomically relative to activity-log appends. */
+    public void setLoggingEnabled(boolean enabled) {
+        synchronized (LOCK) {
+            if (!preferences.edit().putBoolean("logging_enabled", enabled).commit()) {
+                throw new IllegalStateException("Could not save logging setting");
+            }
+        }
     }
 
     /** Identifies settings changes so workers can reject stale scans. */
@@ -61,11 +87,11 @@ public final class SyncSettings {
     /** Stores an honest status message for display on the main screen. */
     public void status(String message) {
         if (!preferences.edit().putString("status", message).commit()) {
-            throw new IllegalStateException("Could not save monitoring status");
+            throw new IllegalStateException("Could not save background sync status");
         }
     }
 
-    /** Returns the latest persisted monitoring status. */
+    /** Returns the latest persisted synchronization status. */
     public String status() {
         return preferences.getString("status", "No check has completed.");
     }
