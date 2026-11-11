@@ -5,6 +5,18 @@ selected source address book to a selected destination. It uses Android's
 Contacts Provider, so both books must be exposed by Android; syncing a
 DAVx5-managed book with its server remains the account sync adapter's job.
 
+## Background
+
+I created this app basically for myself. I use DAVx5 to synchronize my contacts to a Nextcloud instance. DAVx5 creates a second local address book on my phone. This is selected as default.
+
+However, I also use WhatsApp. The issue is: If I create a new contact from within WhatsApp, it always saves to the old "PHONE" address book, which is not synchronized by DAVx5. It is not possible to select the DAVx5 address book as destination in WhatsApp.
+
+This is why I created this app. In background, it regularly scans one selectable address book and transfers all new and changed contacts to a second selectable address book. In my case, from PHONE to DAVx5 address book.
+
+The issue is known by the developers of DAVx5, but there is no immediate solution. See also:
+[Data mover / migration / export tool](https://github.com/bitfireAT/davx5-ose/issues/2108)
+[DAVx5 not present in WhatsApp add contact](https://github.com/bitfireAT/davx5-ose/discussions/788#discussioncomment-19262463)
+
 ## Install and first steps
 
 - Requires Android 8.0+
