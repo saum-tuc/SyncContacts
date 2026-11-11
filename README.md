@@ -13,8 +13,8 @@ However, I also use WhatsApp. The issue is: If I create a new contact from withi
 
 This is why I created this app. In background, it regularly scans one selectable address book and transfers all new and changed contacts to a second selectable address book. In my case, from PHONE to DAVx5 address book.
 
-The issue is known by the developers of DAVx5, but there is no immediate solution. See also:
-[Data mover / migration / export tool](https://github.com/bitfireAT/davx5-ose/issues/2108)
+The issue is known by the developers of DAVx5, but there is no immediate solution. See also:  
+[Data mover / migration / export tool](https://github.com/bitfireAT/davx5-ose/issues/2108)  
 [DAVx5 not present in WhatsApp add contact](https://github.com/bitfireAT/davx5-ose/discussions/788#discussioncomment-19262463)
 
 ## Install and first steps
